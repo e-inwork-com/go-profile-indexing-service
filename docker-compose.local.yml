@@ -1,0 +1,242 @@
+version: '3'
+
+services:
+  solr-local-1:
+    image: solr
+    container_name: solr-local-1
+    ports:
+     - "8981:8983"
+    environment:
+      - ZK_HOST=zoo-local-1:2181,zoo-local-2:2181,zoo-local-3:2181
+    networks:
+      - network-local
+    volumes:
+      - ./local/local/solr-local-1:/var/solr
+    depends_on:
+      - zoo-local-1
+      - zoo-local-2
+      - zoo-local-3
+
+  solr-local-2:
+    image: solr
+    container_name: solr-local-2
+    ports:
+     - "8982:8983"
+    environment:
+      - ZK_HOST=zoo-local-1:2181,zoo-local-2:2181,zoo-local-3:2181
+    networks:
+      - network-local
+    volumes:
+      - ./local/local/solr-local-2:/var/solr
+    depends_on:
+      - zoo-local-1
+      - zoo-local-2
+      - zoo-local-3
+
+  solr-local-3:
+    image: solr
+    container_name: solr-local-3
+    ports:
+     - "8983:8983"
+    environment:
+      - ZK_HOST=zoo-local-1:2181,zoo-local-2:2181,zoo-local-3:2181
+    networks:
+      - network-local
+    volumes:
+      - ./local/local/solr-local-3:/var/solr
+    depends_on:
+      - zoo-local-1
+      - zoo-local-2
+      - zoo-local-3
+
+  zoo-local-1:
+    image: zookeeper
+    container_name: zoo-local-1
+    restart: always
+    hostname: zoo-local-1
+    ports:
+      - 2181:2181
+      - 7001:7000
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_SERVERS: server.1=zoo-local-1:2888:3888;2181 server.2=zoo-local-2:2888:3888;2181 server.3=zoo-local-3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: mntr, conf, ruok
+      ZOO_CFG_EXTRA: "metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider metricsProvider.httpPort=7000 metricsProvider.exportJvmInfo=true"
+    networks:
+      - network-local
+    volumes:
+      - ./local/local/zoo-local-1:/data
+
+  zoo-local-2:
+    image: zookeeper
+    container_name: zoo-local-2
+    restart: always
+    hostname: zoo-local-2
+    ports:
+      - 2182:2181
+      - 7002:7000
+    environment:
+      ZOO_MY_ID: 2
+      ZOO_SERVERS: server.1=zoo-local-1:2888:3888;2181 server.2=zoo-local-2:2888:3888;2181 server.3=zoo-local-3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: mntr, conf, ruok
+      ZOO_CFG_EXTRA: "metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider metricsProvider.httpPort=7000 metricsProvider.exportJvmInfo=true"
+    networks:
+      - network-local
+    volumes:
+      - ./local/local/zoo-local-2:/data
+
+  zoo-local-3:
+    image: zookeeper
+    container_name: zoo-local-3
+    restart: always
+    hostname: zoo-local-3
+    ports:
+      - 2183:2181
+      - 7003:7000
+    environment:
+      ZOO_MY_ID: 3
+      ZOO_SERVERS: sserver.1=zoo-local-1:2888:3888;2181 server.2=zoo-local-2:2888:3888;2181 server.3=zoo-local-3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: mntr, conf, ruok
+      ZOO_CFG_EXTRA: "metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider metricsProvider.httpPort=7000 metricsProvider.exportJvmInfo=true"
+    networks:
+      - network-local
+    volumes:
+      - ./local/local/zoo-local-3:/data
+
+  curl-local:
+    build:
+      context: .
+      dockerfile: Dockerfile.curl
+    tty: true
+    container_name: curl-local
+    restart: on-failure
+    hostname: curl-local
+    depends_on:
+      - solr-local-1
+      - solr-local-3
+      - solr-local-2
+      - zoo-local-1
+      - zoo-local-2
+      - zoo-local-3
+    networks:
+      - network-local
+    volumes:
+      - ./solr-entrypoint.sh:/bin/solr-entrypoint.sh
+    entrypoint:
+      - /bin/sh
+      - /bin/solr-entrypoint.sh
+
+  db-local:
+    image: postgres
+    hostname: db-service
+    networks:
+      - network-local
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./local/local/progresql-data:/var/lib/postgresql/data/
+
+  migrate-local:
+    depends_on:
+      - db-local
+    image: migrate/migrate
+    networks:
+      - network-local
+    volumes:
+      - ./migrations:/migrations
+    command: -database postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable -path /migrations up
+    restart: on-failure
+
+  user-local:
+    depends_on:
+      - migrate-local
+    build:
+      context: .
+      dockerfile: Dockerfile.user
+    hostname: go-user-service
+    networks:
+      - network-local
+    ports:
+      - "4000"
+    security_opt:
+      - "seccomp:unconfined"
+    environment:
+      - DBDSN=${DBDSN:-postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable}
+      - AUTHSECRET=${AUTHSECRET:-secret}
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  profile-indexing-local:
+    depends_on:
+      - migrate-local
+      - solr-local-1
+      - solr-local-3
+      - solr-local-2
+      - zoo-local-1
+      - zoo-local-2
+      - zoo-local-3
+      - curl-local
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    hostname: go-profile-indexing-service
+    networks:
+      - network-local
+    ports:
+      - "5002"
+    security_opt:
+      - "seccomp:unconfined"
+    environment:
+      - DBDSN=${DBDSN:-postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable}
+      - GRPCPORT=${GRPCPORT:-5002}
+      - SOLRURL=${SOLRURL:-http://host.docker.internal:8983}
+      - SOLRPROFILE=${SOLRPROFILE:-profiles}
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  profile-local:
+    depends_on:
+      - profile-indexing-local
+    build:
+      context: .
+      dockerfile: Dockerfile.profile
+    hostname: go-profile-service
+    networks:
+      - network-local
+    ports:
+      - "4002"
+    security_opt:
+      - "seccomp:unconfined"
+    volumes:
+      - ./local/local/uploads:/app/uploads
+    environment:
+      - DBDSN=${DBDSN:-postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable}
+      - AUTHSECRET=${AUTHSECRET:-secret}
+      - UPLOADS=${UPLOADS:-/app/uploads}
+      - GRPCPROFILE=${GRPCPROFILE:-go-profile-indexing-service:5002}
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  front-envoy-local:
+    depends_on:
+      - user-local
+      - profile-local
+    build:
+      context: .
+      dockerfile: Dockerfile.local.frontenvoy
+    networks:
+      - network-local
+    ports:
+      - "${PORT_PROXY:-8000}:8000"
+      - "${PORT_STATS:-8001}:8001"
+
+networks:
+  network-local:
+    driver: bridge

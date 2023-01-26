@@ -1,0 +1,213 @@
+version: '3'
+
+services:
+  solr-test-1:
+    image: solr
+    container_name: solr-test-1
+    ports:
+     - "8981:8983"
+    environment:
+      - ZK_HOST=zoo-test-1:2181,zoo-test-2:2181,zoo-test-3:2181
+    networks:
+      - network-test
+    volumes:
+      - ./local/test/solr-test-1:/var/solr
+    depends_on:
+      - zoo-test-1
+      - zoo-test-2
+      - zoo-test-3
+
+  solr-test-2:
+    image: solr
+    container_name: solr-test-2
+    ports:
+     - "8982:8983"
+    environment:
+      - ZK_HOST=zoo-test-1:2181,zoo-test-2:2181,zoo-test-3:2181
+    networks:
+      - network-test
+    volumes:
+      - ./local/test/solr-test-2:/var/solr
+    depends_on:
+      - zoo-test-1
+      - zoo-test-2
+      - zoo-test-3
+
+  solr-test-3:
+    image: solr
+    container_name: solr-test-3
+    ports:
+     - "8983:8983"
+    environment:
+      - ZK_HOST=zoo-test-1:2181,zoo-test-2:2181,zoo-test-3:2181
+    networks:
+      - network-test
+    volumes:
+      - ./local/test/solr-test-3:/var/solr
+    depends_on:
+      - zoo-test-1
+      - zoo-test-2
+      - zoo-test-3
+
+  zoo-test-1:
+    image: zookeeper
+    container_name: zoo-test-1
+    restart: always
+    hostname: zoo-test-1
+    ports:
+      - 2181:2181
+      - 7001:7000
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_SERVERS: server.1=zoo-test-1:2888:3888;2181 server.2=zoo-test-2:2888:3888;2181 server.3=zoo-test-3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: mntr, conf, ruok
+      ZOO_CFG_EXTRA: "metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider metricsProvider.httpPort=7000 metricsProvider.exportJvmInfo=true"
+    networks:
+      - network-test
+    volumes:
+      - ./local/test/zoo-test-1:/data
+
+  zoo-test-2:
+    image: zookeeper
+    container_name: zoo-test-2
+    restart: always
+    hostname: zoo-test-2
+    ports:
+      - 2182:2181
+      - 7002:7000
+    environment:
+      ZOO_MY_ID: 2
+      ZOO_SERVERS: server.1=zoo-test-1:2888:3888;2181 server.2=zoo-test-2:2888:3888;2181 server.3=zoo-test-3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: mntr, conf, ruok
+      ZOO_CFG_EXTRA: "metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider metricsProvider.httpPort=7000 metricsProvider.exportJvmInfo=true"
+    networks:
+      - network-test
+    volumes:
+      - ./local/test/zoo-test-2:/data
+
+  zoo-test-3:
+    image: zookeeper
+    container_name: zoo-test-3
+    restart: always
+    hostname: zoo-test-3
+    ports:
+      - 2183:2181
+      - 7003:7000
+    environment:
+      ZOO_MY_ID: 3
+      ZOO_SERVERS: sserver.1=zoo-test-1:2888:3888;2181 server.2=zoo-test-2:2888:3888;2181 server.3=zoo-test-3:2888:3888;2181
+      ZOO_4LW_COMMANDS_WHITELIST: mntr, conf, ruok
+      ZOO_CFG_EXTRA: "metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider metricsProvider.httpPort=7000 metricsProvider.exportJvmInfo=true"
+    networks:
+      - network-test
+    volumes:
+      - ./local/test/zoo-test-3:/data
+
+  curl-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.curl
+    tty: true
+    container_name: curl-test
+    restart: on-failure
+    hostname: curl-test
+    depends_on:
+      - solr-test-1
+      - solr-test-3
+      - solr-test-2
+      - zoo-test-1
+      - zoo-test-2
+      - zoo-test-3
+    networks:
+      - network-test
+    volumes:
+      - ./solr-entrypoint.sh:/bin/solr-entrypoint.sh
+    entrypoint:
+      - /bin/sh
+      - /bin/solr-entrypoint.sh
+
+  db-test:
+    image: postgres
+    hostname: db-service
+    networks:
+      - network-test
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./local/test/progresql-data:/var/lib/postgresql/data/
+
+  migrate-test:
+    depends_on:
+      - db-test
+    image: migrate/migrate
+    networks:
+      - network-test
+    volumes:
+      - ./migrations:/migrations
+    command: -database postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable -path /migrations up
+    restart: on-failure
+
+  user-test:
+    depends_on:
+      - migrate-test
+    build:
+      context: .
+      dockerfile: Dockerfile.user
+    hostname: go-user-service
+    networks:
+      - network-test
+    ports:
+      - "4000"
+    security_opt:
+      - "seccomp:unconfined"
+    environment:
+      - DBDSN=${DBDSN:-postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable}
+      - AUTHSECRET=${AUTHSECRET:-secret}
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  profile-test:
+    depends_on:
+      - migrate-test
+    build:
+      context: .
+      dockerfile: Dockerfile.profile
+    hostname: go-profile-service
+    networks:
+      - network-test
+    ports:
+      - "4002"
+    security_opt:
+      - "seccomp:unconfined"
+    volumes:
+      - ./local/test/uploads:/app/uploads
+    environment:
+      - DBDSN=${DBDSN:-postgres://postgres:postgres@db-service:5432/postgres?sslmode=disable}
+      - AUTHSECRET=${AUTHSECRET:-secret}
+      - UPLOADS=${UPLOADS:-/app/uploads}
+      - GRPCPROFILE=${GRPCPROFILE:-host.docker.internal:5002}
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  front-envoy-test:
+    depends_on:
+      - user-test
+      - profile-test
+    build:
+      context: .
+      dockerfile: Dockerfile.test.frontenvoy
+    networks:
+      - network-test
+    ports:
+      - "${PORT_PROXY:-8000}:8000"
+      - "${PORT_STATS:-8001}:8001"
+
+networks:
+  network-test:
+    driver: bridge
